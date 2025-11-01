@@ -1,6 +1,6 @@
-# playground
+# The Playground
 
-A collection of reusable GitHub Actions for Project Zenith Systems.
+This is a safe space for testing automations and AI ideas away from the public eye.
 
 ## Available Actions
 
