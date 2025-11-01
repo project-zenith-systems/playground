@@ -1,0 +1,156 @@
+name: 'TODO to Issues'
+description: 'Creates GitHub issues from TODO.md file and deletes it'
+author: 'Project Zenith Systems'
+
+inputs:
+  github-token:
+    description: 'GitHub token for creating issues'
+    required: true
+    default: ${{ github.token }}
+  todo-file:
+    description: 'Path to the TODO file'
+    required: false
+    default: 'TODO.md'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check if TODO file exists
+      id: check-todo
+      shell: bash
+      run: |
+        if [ -f "${{ inputs.todo-file }}" ]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "TODO file not found, skipping..."
+        fi
+
+    - name: Process TODO file
+      if: steps.check-todo.outputs.exists == 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        TODO_FILE: ${{ inputs.todo-file }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        # Parse TODO.md and create issues
+        echo "Processing TODO file: $TODO_FILE"
+        
+        # Create a temporary file to store issues
+        TEMP_FILE=$(mktemp)
+        
+        # Parse TODO items using AWK
+        # Format: ## Title (for issue title)
+        # Following lines until next ## or end of file are the description (optional)
+        awk '
+        BEGIN { 
+          title = ""
+          description = ""
+          issue_count = 0
+        }
+        /^## / {
+          # If we have a previous title, save it
+          if (title != "") {
+            # Trim trailing newlines from description
+            gsub(/\\n+$/, "", description)
+            
+            # Output title and description separated by a delimiter
+            printf "%s|||%s\n", title, description
+            
+            issue_count++
+            description = ""
+          }
+          
+          # Extract new title (remove ## and trim)
+          title = substr($0, 4)
+          gsub(/^[ \t]+|[ \t]+$/, "", title)
+          next
+        }
+        /^$/ {
+          # Handle blank lines in description
+          if (title != "" && description != "") {
+            description = description "\\n"
+          }
+          next
+        }
+        {
+          # Accumulate description lines
+          if (title != "") {
+            if (description != "") {
+              description = description "\\n" $0
+            } else {
+              # Skip leading blank lines
+              if (length($0) > 0) {
+                description = $0
+              }
+            }
+          }
+        }
+        END {
+          # Save last issue if exists
+          if (title != "") {
+            # Trim trailing newlines from description
+            gsub(/\\n+$/, "", description)
+            printf "%s|||%s\n", title, description
+            issue_count++
+          }
+          
+          printf "TOTAL_ISSUES=%d\n", issue_count > "/dev/stderr"
+        }
+        ' "$TODO_FILE" > "$TEMP_FILE"
+        
+        # Read each issue and create it via GitHub API
+        ISSUE_COUNT=0
+        while IFS= read -r line; do
+          # Split by first occurrence of |||
+          issue_title="${line%%|||*}"
+          issue_body="${line#*|||}"
+          
+          echo "Creating issue: $issue_title"
+          
+          # Create JSON payload
+          JSON_PAYLOAD=$(jq -n \
+            --arg title "$issue_title" \
+            --arg body "$issue_body" \
+            '{title: $title, body: $body}')
+          
+          # Create issue via GitHub API
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/issues" \
+            -d "$JSON_PAYLOAD")
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
+          
+          if [ "$HTTP_CODE" -eq 201 ]; then
+            ISSUE_NUMBER=$(echo "$RESPONSE_BODY" | jq -r '.number')
+            echo "✓ Created issue #$ISSUE_NUMBER: $issue_title"
+            ISSUE_COUNT=$((ISSUE_COUNT + 1))
+          else
+            echo "✗ Failed to create issue: $issue_title (HTTP $HTTP_CODE)"
+            echo "$RESPONSE_BODY"
+          fi
+        done < "$TEMP_FILE"
+        
+        rm -f "$TEMP_FILE"
+        echo ""
+        echo "Total issues created: $ISSUE_COUNT"
+
+    - name: Delete TODO file
+      if: steps.check-todo.outputs.exists == 'true'
+      shell: bash
+      run: |
+        echo "Deleting TODO file: ${{ inputs.todo-file }}"
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git rm "${{ inputs.todo-file }}"
+        git commit -m "chore: remove TODO.md after creating issues"
+        git push
+
+branding:
+  icon: 'check-square'
+  color: 'green'

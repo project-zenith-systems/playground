@@ -1,0 +1,29 @@
+name: Process TODOs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'TODO.md'
+
+# Prevent concurrent runs to avoid duplicate issues
+concurrency:
+  group: process-todos
+  cancel-in-progress: false
+
+jobs:
+  create-issues:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Process TODO file
+        uses: ./
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
