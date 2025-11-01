@@ -3,7 +3,7 @@ name: Process TODOs
 on:
   push:
     branches:
-      - copilot/create-reusable-github-action
+      - main
     paths:
       - 'TODO.md'
   workflow_dispatch:
