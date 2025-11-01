@@ -36,46 +36,57 @@ runs:
       run: |
         echo "Processing TODO file: $TODO_FILE"
         
+        # Function to create a GitHub issue
+        create_issue() {
+          local title="$1"
+          local body="$2"
+          
+          echo "Creating issue: $title"
+          
+          # Create JSON payload
+          JSON_PAYLOAD=$(jq -n \
+            --arg title "$title" \
+            --arg body "$body" \
+            '{title: $title, body: $body}')
+          
+          # Create issue via GitHub API
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/issues" \
+            -d "$JSON_PAYLOAD")
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
+          
+          if [ "$HTTP_CODE" -eq 201 ]; then
+            ISSUE_NUMBER=$(echo "$RESPONSE_BODY" | jq -r '.number')
+            echo "✓ Created issue #$ISSUE_NUMBER: $title"
+            return 0
+          else
+            echo "✗ Failed to create issue: $title (HTTP $HTTP_CODE)"
+            echo "$RESPONSE_BODY"
+            return 1
+          fi
+        }
+        
         ISSUE_COUNT=0
         current_title=""
         current_body=""
         
         # Process the TODO file line by line
         while IFS= read -r line || [ -n "$line" ]; do
-          if [[ "$line" =~ ^##\  ]]; then
+          if [[ "$line" =~ ^"## " ]]; then
             # Found a new title - process previous issue if exists
             if [ -n "$current_title" ]; then
-              echo "Creating issue: $current_title"
-              
-              # Create JSON payload
-              JSON_PAYLOAD=$(jq -n \
-                --arg title "$current_title" \
-                --arg body "$current_body" \
-                '{title: $title, body: $body}')
-              
-              # Create issue via GitHub API
-              RESPONSE=$(curl -s -w "\n%{http_code}" \
-                -X POST \
-                -H "Authorization: Bearer $GITHUB_TOKEN" \
-                -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/repos/$GITHUB_REPOSITORY/issues" \
-                -d "$JSON_PAYLOAD")
-              
-              HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-              RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
-              
-              if [ "$HTTP_CODE" -eq 201 ]; then
-                ISSUE_NUMBER=$(echo "$RESPONSE_BODY" | jq -r '.number')
-                echo "✓ Created issue #$ISSUE_NUMBER: $current_title"
+              if create_issue "$current_title" "$current_body"; then
                 ISSUE_COUNT=$((ISSUE_COUNT + 1))
-              else
-                echo "✗ Failed to create issue: $current_title (HTTP $HTTP_CODE)"
-                echo "$RESPONSE_BODY"
               fi
             fi
             
-            # Start new issue
-            current_title="${line#\#\# }"
+            # Start new issue (remove '## ' prefix)
+            current_title="${line#"## "}"
             current_body=""
           elif [ -n "$current_title" ]; then
             # Accumulate body lines
@@ -97,30 +108,8 @@ runs:
         
         # Process last issue
         if [ -n "$current_title" ]; then
-          echo "Creating issue: $current_title"
-          
-          JSON_PAYLOAD=$(jq -n \
-            --arg title "$current_title" \
-            --arg body "$current_body" \
-            '{title: $title, body: $body}')
-          
-          RESPONSE=$(curl -s -w "\n%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/issues" \
-            -d "$JSON_PAYLOAD")
-          
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
-          
-          if [ "$HTTP_CODE" -eq 201 ]; then
-            ISSUE_NUMBER=$(echo "$RESPONSE_BODY" | jq -r '.number')
-            echo "✓ Created issue #$ISSUE_NUMBER: $current_title"
+          if create_issue "$current_title" "$current_body"; then
             ISSUE_COUNT=$((ISSUE_COUNT + 1))
-          else
-            echo "✗ Failed to create issue: $current_title (HTTP $HTTP_CODE)"
-            echo "$RESPONSE_BODY"
           fi
         fi
         
