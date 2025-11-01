@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'TODO.md'
+  workflow_dispatch:
 
 # Prevent concurrent runs to avoid duplicate issues
 concurrency:
