@@ -24,6 +24,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Process TODO file
-        uses: ./
+        uses: ./.github/actions/todo-to-issues
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
