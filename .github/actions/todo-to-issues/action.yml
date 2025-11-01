@@ -1,0 +1,157 @@
+name: 'TODO to Issues'
+description: 'Creates GitHub issues from TODO.md file and deletes it'
+author: 'Project Zenith Systems'
+
+inputs:
+  github-token:
+    description: 'GitHub token for creating issues'
+    required: true
+    default: ${{ github.token }}
+  todo-file:
+    description: 'Path to the TODO file'
+    required: false
+    default: 'TODO.md'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check if TODO file exists
+      id: check-todo
+      shell: bash
+      run: |
+        if [ -f "${{ inputs.todo-file }}" ]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "TODO file not found, skipping..."
+        fi
+
+    - name: Process TODO file
+      if: steps.check-todo.outputs.exists == 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        TODO_FILE: ${{ inputs.todo-file }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        echo "Processing TODO file: $TODO_FILE"
+        
+        # Function to create a GitHub issue
+        create_issue() {
+          local title="$1"
+          local body="$2"
+          
+          echo "Creating issue: $title"
+          
+          # Create JSON payload
+          JSON_PAYLOAD=$(jq -n \
+            --arg title "$title" \
+            --arg body "$body" \
+            '{title: $title, body: $body}')
+          
+          # Create issue via GitHub API
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/issues" \
+            -d "$JSON_PAYLOAD")
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
+          
+          if [ "$HTTP_CODE" -eq 201 ]; then
+            ISSUE_NUMBER=$(echo "$RESPONSE_BODY" | jq -r '.number')
+            echo "✓ Created issue #$ISSUE_NUMBER: $title"
+            return 0
+          else
+            echo "✗ Failed to create issue: $title (HTTP $HTTP_CODE)"
+            echo "$RESPONSE_BODY"
+            return 1
+          fi
+        }
+        
+        ISSUE_COUNT=0
+        current_title=""
+        current_body=""
+        
+        # Process the TODO file line by line
+        while IFS= read -r line || [ -n "$line" ]; do
+          if [[ "$line" =~ ^"## " ]]; then
+            # Found a new title - process previous issue if exists
+            if [ -n "$current_title" ]; then
+              if create_issue "$current_title" "$current_body"; then
+                ISSUE_COUNT=$((ISSUE_COUNT + 1))
+              fi
+            fi
+            
+            # Start new issue (remove '## ' prefix)
+            current_title="${line#"## "}"
+            current_body=""
+          elif [ -n "$current_title" ]; then
+            # Accumulate body lines
+            if [ -z "$line" ]; then
+              # Blank line
+              if [ -n "$current_body" ]; then
+                current_body="${current_body}"$'\n'
+              fi
+            else
+              # Content line
+              if [ -n "$current_body" ]; then
+                current_body="${current_body}"$'\n'"$line"
+              else
+                current_body="$line"
+              fi
+            fi
+          fi
+        done < "$TODO_FILE"
+        
+        # Process last issue
+        if [ -n "$current_title" ]; then
+          if create_issue "$current_title" "$current_body"; then
+            ISSUE_COUNT=$((ISSUE_COUNT + 1))
+          fi
+        fi
+        
+        echo ""
+        echo "Total issues created: $ISSUE_COUNT"
+
+    - name: Delete TODO file
+      if: steps.check-todo.outputs.exists == 'true'
+      shell: bash
+      run: |
+        echo "Deleting TODO file: ${{ inputs.todo-file }}"
+        
+        # Check if file still exists (might have been deleted by another process)
+        if [ ! -f "${{ inputs.todo-file }}" ]; then
+          echo "TODO file already deleted, skipping..."
+          exit 0
+        fi
+        
+        # Configure git
+        git config user.name "workMULE"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # Remove the file
+        if git rm "${{ inputs.todo-file }}"; then
+          # Commit the change
+          if git commit -m "chore: remove TODO.md after creating issues" --allow-empty; then
+            # Push the change
+            if git push; then
+              echo "✓ Successfully deleted TODO file"
+            else
+              echo "✗ Failed to push changes"
+              exit 1
+            fi
+          else
+            echo "✗ Failed to commit changes"
+            exit 1
+          fi
+        else
+          echo "✗ Failed to remove file with git"
+          exit 1
+        fi
+
+branding:
+  icon: 'check-square'
+  color: 'green'
