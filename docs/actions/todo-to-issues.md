@@ -4,11 +4,11 @@ Automatically creates GitHub issues from a `TODO.md` file when pushed to the mai
 
 ## Features
 
-- ✅ Automatically creates GitHub issues from TODO items
-- ✅ Supports optional descriptions for each TODO
-- ✅ Deletes TODO.md after processing to avoid duplicates
-- ✅ Prevents concurrent runs to avoid duplicate issues
-- ✅ Simple and intuitive TODO.md format
+- Automatically creates GitHub issues from TODO items
+- Supports optional descriptions for each TODO
+- Deletes TODO.md after processing to avoid duplicates
+- Prevents concurrent runs to avoid duplicate issues
+- Simple and intuitive TODO.md format
 
 ## TODO.md Format
 
