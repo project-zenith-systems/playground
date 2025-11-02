@@ -107,16 +107,25 @@ This hybrid model provides better performance than pure computational fluid dyna
 Each tile contains a gas mixture defined by:
 
 ```rust
+/// Fixed-size array approach for better cache locality and performance.
+/// Since we have a known set of gas types, we can use a fixed array indexed by GasType.
 pub struct GasMixture {
-    /// Moles of each gas type (mol)
-    pub moles: HashMap<GasType, f32>,
+    /// Moles of each gas type (mol) - indexed by GasType as usize
+    /// Using fixed array instead of HashMap for better performance with thousands of tiles
+    pub moles: [u64; GAS_TYPE_COUNT],  // Stored as micro-moles (10^-6 mol) to avoid floating point
     
-    /// Temperature in Kelvin (K)
-    pub temperature: f32,
+    /// Temperature in milli-Kelvin (mK) - stored as u64 to avoid floating point inaccuracies
+    pub temperature: u64,
     
-    /// Volume in cubic meters (m³)
-    pub volume: f32,
+    /// Volume in micro-cubic meters (μm³) - stored as u64
+    pub volume: u64,
 }
+
+// Helper constants
+pub const GAS_TYPE_COUNT: usize = 7;  // Number of GasType variants
+pub const MICROMOLES_PER_MOLE: u64 = 1_000_000;
+pub const MILLIKELVIN_PER_KELVIN: u64 = 1_000;
+pub const MICRO_M3_PER_M3: u64 = 1_000_000;
 ```
 
 #### Gas Types
@@ -137,17 +146,25 @@ pub enum GasType {
 
 ```rust
 pub struct GasProperties {
-    /// Molar mass (g/mol)
-    pub molar_mass: f32,
+    /// Molar mass in micro-grams per mole (μg/mol)
+    pub molar_mass: u64,
     
-    /// Specific heat capacity (J/(mol·K))
-    pub specific_heat: f32,
+    /// Specific heat capacity in micro-Joules per (mol·K) (μJ/(mol·K))
+    pub specific_heat: u64,
     
-    /// Heat capacity ratio (Cp/Cv)
-    pub heat_capacity_ratio: f32,
+    /// Heat capacity ratio (Cp/Cv) scaled by 1000 for integer storage
+    pub heat_capacity_ratio: u64,
     
-    /// Fusion temperature (K)
-    pub fusion_temp: Option<f32>,
+    /// Fusion temperature in milli-Kelvin (mK)
+    pub fusion_temp: Option<u64>,
+    
+    /// Thermal conductivity (affects heat transfer between tiles)
+    /// Scaled by 10^6 for integer storage
+    pub thermal_conductivity: u64,
+    
+    /// Dynamic viscosity (affects gas flow dampening)
+    /// Scaled by 10^9 for integer storage (nano-Pascal-seconds)
+    pub dynamic_viscosity: u64,
     
     /// Is this gas oxidizer?
     pub is_oxidizer: bool,
@@ -155,8 +172,8 @@ pub struct GasProperties {
     /// Is this gas fuel?
     pub is_fuel: bool,
     
-    /// Toxicity threshold (kPa partial pressure)
-    pub toxicity_threshold: Option<f32>,
+    /// Toxicity threshold in micro-kPa partial pressure
+    pub toxicity_threshold: Option<u64>,
 }
 ```
 
@@ -164,21 +181,28 @@ pub struct GasProperties {
 
 #### Pressure (Ideal Gas Law)
 
+Using integer arithmetic with appropriate scaling:
+
 ```
 P = (n * R * T) / V
 
-Where:
-- P = Pressure (kPa)
-- n = Total moles
-- R = Gas constant (8.314 J/(mol·K))
-- T = Temperature (K)
-- V = Volume (m³)
+Where (in integer units):
+- P = Pressure in micro-kPa (μkPa)
+- n = Total micro-moles
+- R = Gas constant = 8314 (scaled: actual 8.314 J/(mol·K) * 1000)
+- T = Temperature in milli-Kelvin (mK)
+- V = Volume in micro-cubic meters (μm³)
+
+// Example calculation avoiding overflow:
+// P_micro_kPa = (n_micromoles * 8314 * T_millikelvin) / (1000 * V_micro_m3)
 ```
+
+The math works with u64 by using scaled integer representations. This avoids floating-point inaccuracies while maintaining precision suitable for gameplay.
 
 #### Heat Capacity
 
 ```
-Heat Capacity = Σ(moles_i × specific_heat_i)
+Heat Capacity = Σ(micromoles_i × specific_heat_i) / MICROMOLES_PER_MOLE
 ```
 
 #### Gas Sharing (Pressure Equalization)
@@ -239,27 +263,14 @@ impl Plugin for AtmospherePlugin {
 pub struct TileAtmosphere {
     pub mixture: GasMixture,
     pub sealed: bool,  // Is this tile sealed (walls, doors)?
-}
-
-/// Defines connections between tiles
-#[derive(Component)]
-pub struct AtmosphereConnection {
-    pub connected_tiles: Vec<Entity>,
-    pub flow_coefficient: f32,  // 0.0 = blocked, 1.0 = open
+    /// Neighbor tiles and their connection state (open/closed)
+    /// Using a fixed-size array for up to 4 cardinal directions
+    pub neighbors: [Option<(Entity, bool)>; 4],  // N, E, S, W
 }
 
 /// Space/void marker
 #[derive(Component)]
 pub struct ExposedToSpace;
-
-/// Equipment that affects atmosphere
-#[derive(Component)]
-pub enum AtmosphereEquipment {
-    Vent { target_pressure: f32 },
-    Scrubber { filter_gases: Vec<GasType> },
-    Heater { target_temp: f32, power: f32 },
-    Cooler { target_temp: f32, power: f32 },
-}
 ```
 
 ### Events
@@ -270,19 +281,13 @@ pub enum AtmosphereEvent {
     /// Sudden decompression event
     Breach {
         tile: Entity,
-        severity: f32,
+        severity: u64,  // Rate of gas loss in micromoles per tick
     },
     
     /// Fire started
     Ignition {
         tile: Entity,
-        fuel_amount: f32,
-    },
-    
-    /// Dangerous atmospheric condition
-    Hazard {
-        tile: Entity,
-        hazard_type: HazardType,
+        fuel_micromoles: u64,
     },
 }
 ```
@@ -328,40 +333,62 @@ For each simulation tick:
 **Monson Method** (optimized for games):
 
 ```rust
-fn share_gas(tile_a: &mut GasMixture, tile_b: &mut GasMixture, coefficient: f32) {
-    let total_volume = tile_a.volume + tile_b.volume;
-    
-    // Calculate pressures
-    let pressure_a = tile_a.pressure();
-    let pressure_b = tile_b.pressure();
-    
-    // Only share if significant pressure difference
-    if (pressure_a - pressure_b).abs() < MIN_PRESSURE_DIFF {
+fn share_gas(tile_a: &mut GasMixture, tile_b: &mut GasMixture, is_open: bool, gas_props: &GasRegistry) {
+    if !is_open {
         return;
     }
     
-    // Calculate transfer amount (limited by coefficient and time)
-    let pressure_diff = pressure_a - pressure_b;
-    let transfer_moles = (pressure_diff * tile_a.volume * coefficient) / 
-                         (GAS_CONSTANT * tile_a.temperature);
+    let total_volume = tile_a.volume + tile_b.volume;
     
-    // Limit transfer to prevent oscillation
-    let transfer_moles = transfer_moles.clamp(
-        -tile_b.total_moles() * 0.1,
-        tile_a.total_moles() * 0.1
-    );
+    // Calculate pressures (in micro-kPa)
+    let pressure_a = tile_a.pressure();
+    let pressure_b = tile_b.pressure();
+    let pressure_diff = pressure_a as i128 - pressure_b as i128;
+    
+    // Only share if significant pressure difference (0.1 kPa = 100,000 μkPa)
+    if pressure_diff.abs() < 100_000 {
+        return;
+    }
+    
+    // Calculate transfer amount based on pressure differential
+    // Using integer math throughout to avoid floating point
+    let transfer_moles = (pressure_diff * tile_a.volume as i128) / 
+                         (8314 * tile_a.temperature as i128 / 1000);
+    
+    // Calculate average viscosity of the gas mixture for dampening
+    let viscosity_a = tile_a.average_viscosity(gas_props);
+    let viscosity_b = tile_b.average_viscosity(gas_props);
+    let avg_viscosity = (viscosity_a + viscosity_b) / 2;
+    
+    // Dampen transfer based on gas viscosity (higher viscosity = slower flow)
+    // Viscosity is in nano-Pascal-seconds, scale appropriately
+    let viscosity_factor = 1_000_000_000 / (avg_viscosity + 1_000_000); // Avoid div by zero
+    let dampened_transfer = (transfer_moles * viscosity_factor as i128) / 1000;
+    
+    // Clamp to prevent numerical instabilities
+    let max_transfer = (tile_a.total_moles() as i128 / 10).min(tile_b.total_moles() as i128 / 10);
+    let transfer_moles = dampened_transfer.clamp(-max_transfer, max_transfer) as i64;
+    
+    if transfer_moles == 0 {
+        return;
+    }
     
     // Transfer each gas proportionally
-    for (gas_type, moles) in &tile_a.moles {
-        let ratio = moles / tile_a.total_moles();
-        let transfer = transfer_moles * ratio;
+    let total_moles_a = tile_a.total_moles();
+    for i in 0..GAS_TYPE_COUNT {
+        if tile_a.moles[i] == 0 {
+            continue;
+        }
         
-        *tile_a.moles.get_mut(gas_type).unwrap() -= transfer;
-        *tile_b.moles.entry(*gas_type).or_insert(0.0) += transfer;
+        let ratio = (tile_a.moles[i] as i128 * 1_000_000) / total_moles_a as i128;
+        let transfer = (transfer_moles as i128 * ratio) / 1_000_000;
+        
+        tile_a.moles[i] = (tile_a.moles[i] as i128 - transfer).max(0) as u64;
+        tile_b.moles[i] = (tile_b.moles[i] as i128 + transfer).max(0) as u64;
     }
     
     // Transfer heat
-    share_heat(tile_a, tile_b, coefficient);
+    share_heat(tile_a, tile_b, is_open, gas_props);
 }
 ```
 
@@ -369,24 +396,44 @@ fn share_gas(tile_a: &mut GasMixture, tile_b: &mut GasMixture, coefficient: f32)
 
 **Thermal Conduction**:
 
+Heat transfer between tiles is based on the thermal conductivity of the gas mixtures, not arbitrary dampening factors.
+
 ```rust
-fn share_heat(tile_a: &mut GasMixture, tile_b: &mut GasMixture, coefficient: f32) {
-    let heat_capacity_a = tile_a.heat_capacity();
-    let heat_capacity_b = tile_b.heat_capacity();
-    
-    if heat_capacity_a <= 0.0 || heat_capacity_b <= 0.0 {
+fn share_heat(tile_a: &mut GasMixture, tile_b: &mut GasMixture, is_open: bool, gas_props: &GasRegistry) {
+    if !is_open {
         return;
     }
     
-    // Calculate temperature difference
-    let temp_diff = tile_a.temperature - tile_b.temperature;
+    let heat_capacity_a = tile_a.heat_capacity(gas_props);
+    let heat_capacity_b = tile_b.heat_capacity(gas_props);
     
-    // Heat transfer (simplified Fourier's law)
-    let heat_transfer = coefficient * temp_diff * 0.1; // Damping factor
+    if heat_capacity_a == 0 || heat_capacity_b == 0 {
+        return;
+    }
     
-    // Update temperatures
-    tile_a.temperature -= heat_transfer / heat_capacity_a;
-    tile_b.temperature += heat_transfer / heat_capacity_b;
+    // Calculate temperature difference (in milli-Kelvin)
+    let temp_diff = tile_a.temperature as i128 - tile_b.temperature as i128;
+    
+    if temp_diff.abs() < 100 {  // Less than 0.1K difference
+        return;
+    }
+    
+    // Calculate average thermal conductivity of both mixtures
+    let conductivity_a = tile_a.average_thermal_conductivity(gas_props);
+    let conductivity_b = tile_b.average_thermal_conductivity(gas_props);
+    let avg_conductivity = (conductivity_a + conductivity_b) / 2;
+    
+    // Heat transfer based on Fourier's law, scaled by thermal conductivity
+    // Q = k * A * ΔT / d, simplified for tile-based system
+    // Higher conductivity = faster heat transfer
+    let heat_transfer = (avg_conductivity as i128 * temp_diff) / 100_000_000;
+    
+    // Update temperatures based on heat capacities
+    let delta_temp_a = heat_transfer / heat_capacity_a as i128;
+    let delta_temp_b = heat_transfer / heat_capacity_b as i128;
+    
+    tile_a.temperature = (tile_a.temperature as i128 - delta_temp_a).max(0) as u64;
+    tile_b.temperature = (tile_b.temperature as i128 + delta_temp_b).max(0) as u64;
 }
 ```
 
@@ -450,41 +497,102 @@ pub enum ZonePriority {
 
 ### Dirty Flagging
 
-Only update tiles that have changed:
+Only update tiles that have changed. The presence of the component indicates the tile is dirty and needs updating.
 
 ```rust
+/// Marker component - presence indicates tile needs atmospheric update
 #[derive(Component)]
-pub struct AtmosphereDirty {
-    pub changed: bool,
-    pub last_update: f64,
+pub struct AtmosphereDirty;
+```
+
+When a tile's atmosphere changes significantly, add the `AtmosphereDirty` component. After processing, remove it. This is more efficient than checking a boolean field.
+
+```rust
+// Mark tile as dirty
+commands.entity(tile_entity).insert(AtmosphereDirty);
+
+// Query only dirty tiles
+fn update_dirty_tiles(
+    mut commands: Commands,
+    query: Query<(Entity, &mut TileAtmosphere), With<AtmosphereDirty>>,
+) {
+    for (entity, mut atmosphere) in query.iter() {
+        // Process tile...
+        
+        // Remove dirty marker after processing
+        commands.entity(entity).remove::<AtmosphereDirty>();
+    }
 }
 ```
 
 ### Multithreading
 
-Leverage Bevy's parallel iteration:
+Process tiles in parallel, but only dirty tiles to avoid wasted work:
 
 ```rust
 fn update_tile_atmospheres(
-    mut query: Query<(&mut TileAtmosphere, &AtmosphereConnection)>,
+    mut commands: Commands,
+    mut query: Query<(Entity, &mut TileAtmosphere), With<AtmosphereDirty>>,
+    gas_registry: Res<GasRegistry>,
 ) {
-    query.par_iter_mut().for_each(|(mut atmos, connections)| {
-        // Each tile can be processed in parallel
-        // (use atomic operations for shared state)
+    // Process dirty tiles in parallel
+    // Each tile's neighbors array allows independent processing
+    // Tiles share gas with neighbors, which may cause write conflicts,
+    // but Bevy's change detection will mark affected neighbors as dirty
+    // for the next frame, ensuring eventual consistency
+    
+    query.par_iter_mut().for_each(|(entity, mut atmosphere)| {
+        // Process each dirty tile
+        // Read neighbor data and update atmosphere
+        for (neighbor_entity, is_open) in atmosphere.neighbors.iter().flatten() {
+            if *is_open {
+                // Would need neighbor's atmosphere data here
+                // In practice, this requires a two-pass approach or
+                // careful synchronization to avoid data races
+            }
+        }
     });
 }
 ```
 
+Note: Actual implementation requires careful handling of neighbor updates to avoid data races. A practical approach is to:
+1. First pass: Calculate transfers in parallel (read-only)
+2. Second pass: Apply transfers sequentially or with synchronization
+3. Mark neighbors as dirty when changes occur
+
 ### Gas Mixture Pooling
 
-Reuse gas mixture allocations:
+Reuse gas mixture allocations to reduce memory allocations during simulation:
 
 ```rust
 #[derive(Resource)]
 pub struct GasMixturePool {
+    /// Pool of reusable gas mixture instances
     pool: Vec<GasMixture>,
 }
+
+impl GasMixturePool {
+    /// Borrow a gas mixture from the pool for temporary calculations
+    pub fn acquire(&mut self) -> GasMixture {
+        self.pool.pop().unwrap_or_else(GasMixture::default)
+    }
+    
+    /// Return a gas mixture to the pool for reuse
+    pub fn release(&mut self, mut mixture: GasMixture) {
+        // Reset to default state
+        mixture.moles.fill(0);
+        mixture.temperature = 0;
+        mixture.volume = 0;
+        
+        // Only keep a reasonable number in the pool
+        if self.pool.len() < 1000 {
+            self.pool.push(mixture);
+        }
+    }
+}
 ```
+
+This is particularly useful when calculating intermediate values during gas sharing or combustion calculations, reducing allocator pressure.
 
 ### Update Budgeting
 
