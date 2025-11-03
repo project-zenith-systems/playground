@@ -124,11 +124,16 @@ pub fn initialize_neighbors(
 
 /// System to update neighbor connections when walls change
 pub fn update_wall_connections(
-    changed_walls: Query<(Entity, &TilePosition), (With<TileVisual>, Changed<Wall>)>,
+    changed_walls_added: Query<&TilePosition, (With<TileVisual>, Added<Wall>)>,
+    mut changed_walls_removed: RemovedComponents<Wall>,
     mut all_tiles: Query<(&TilePosition, &mut TileAtmosphere, Option<&Wall>)>,
     tile_lookup: Query<(Entity, &TilePosition, Option<&Wall>)>,
 ) {
-    if changed_walls.is_empty() {
+    // Check if any walls were added or removed
+    let has_added = !changed_walls_added.is_empty();
+    let has_removed = changed_walls_removed.read().next().is_some();
+    
+    if !has_added && !has_removed {
         return;
     }
     
