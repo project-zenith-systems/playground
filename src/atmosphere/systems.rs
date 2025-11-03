@@ -10,7 +10,7 @@ pub fn process_gas_sharing(
     mut commands: Commands,
 ) {
     // Collect updates from active tiles
-    let mut updates: Vec<(Entity, GasMixture, Vec<(Entity, GasMixture)>, bool)> = Vec::new();
+    let mut updates: Vec<(Entity, GasMixture, Vec<(Entity, GasMixture, bool)>, bool)> = Vec::new();
     
     for (entity, atmosphere) in active_tiles.iter() {
         let mut neighbor_data = Vec::new();
