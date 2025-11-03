@@ -4,21 +4,25 @@ use super::gas::GasMixture;
 
 /// System to process gas sharing between connected tiles
 pub fn process_gas_sharing(
-    query: Query<(Entity, &TileAtmosphere), With<AtmosphereDirty>>,
-    mut all_tiles: Query<&mut TileAtmosphere>,
+    mut dirty_tiles: Query<(Entity, &mut TileAtmosphere), With<AtmosphereDirty>>,
+    mut other_tiles: Query<&mut TileAtmosphere, Without<AtmosphereDirty>>,
     mut commands: Commands,
 ) {
-    // Collect tiles and their neighbors that need processing
-    // We need to clone the gas mixtures to avoid borrow conflicts
+    // Collect updates from dirty tiles
     let mut updates: Vec<(Entity, GasMixture, Vec<(Entity, GasMixture)>)> = Vec::new();
     
-    for (entity, atmosphere) in query.iter() {
+    for (entity, atmosphere) in dirty_tiles.iter() {
         let mut neighbor_data = Vec::new();
         
         for neighbor_opt in atmosphere.neighbors.iter() {
             if let Some((neighbor_entity, is_open)) = neighbor_opt {
                 if *is_open {
-                    if let Ok(neighbor_atmos) = all_tiles.get(*neighbor_entity) {
+                    // Try to get from other_tiles (without dirty marker)
+                    if let Ok(neighbor_atmos) = other_tiles.get(*neighbor_entity) {
+                        neighbor_data.push((*neighbor_entity, neighbor_atmos.mixture.clone()));
+                    }
+                    // If not found there, try dirty_tiles
+                    else if let Ok((_, neighbor_atmos)) = dirty_tiles.get(*neighbor_entity) {
                         neighbor_data.push((*neighbor_entity, neighbor_atmos.mixture.clone()));
                     }
                 }
@@ -37,15 +41,20 @@ pub fn process_gas_sharing(
             tile_mixture.share_gas_with(&mut neighbor_mixture);
             
             // Update the neighbor's mixture
-            if let Ok(mut neighbor_atmos) = all_tiles.get_mut(neighbor_entity) {
+            // First try other_tiles
+            if let Ok(mut neighbor_atmos) = other_tiles.get_mut(neighbor_entity) {
                 neighbor_atmos.mixture = neighbor_mixture;
                 // Mark neighbor as dirty if there was a change
                 commands.entity(neighbor_entity).insert(AtmosphereDirty);
             }
+            // If not there, try dirty_tiles
+            else if let Ok((_, mut neighbor_atmos)) = dirty_tiles.get_mut(neighbor_entity) {
+                neighbor_atmos.mixture = neighbor_mixture;
+            }
         }
         
         // Update the tile's mixture
-        if let Ok(mut tile_atmos) = all_tiles.get_mut(tile_entity) {
+        if let Ok((_, mut tile_atmos)) = dirty_tiles.get_mut(tile_entity) {
             tile_atmos.mixture = tile_mixture;
         }
         
