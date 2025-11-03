@@ -52,6 +52,10 @@ pub struct AtmosphereActive;
 #[derive(Component)]
 pub struct ExposedToSpace;
 
+/// Wall marker - tiles with this component block gas flow
+#[derive(Component)]
+pub struct Wall;
+
 /// Tile position in the grid
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TilePosition {

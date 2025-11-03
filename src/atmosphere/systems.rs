@@ -93,12 +93,17 @@ pub fn process_gas_sharing(
 /// System to initialize neighbor connections
 pub fn initialize_neighbors(
     mut query: Query<(&TilePosition, &mut TileAtmosphere), Added<TileAtmosphere>>,
-    tile_query: Query<(Entity, &TilePosition)>,
+    tile_query: Query<(Entity, &TilePosition, Option<&Wall>)>,
 ) {
     // Build a position-to-entity map
     let mut position_map = std::collections::HashMap::new();
-    for (entity, pos) in tile_query.iter() {
+    let mut wall_positions = std::collections::HashSet::new();
+    
+    for (entity, pos, wall) in tile_query.iter() {
         position_map.insert(*pos, entity);
+        if wall.is_some() {
+            wall_positions.insert(*pos);
+        }
     }
     
     // Set up neighbor connections for newly added tiles
@@ -107,28 +112,45 @@ pub fn initialize_neighbors(
         
         for (i, neighbor_pos) in neighbor_positions.iter().enumerate() {
             if let Some(&neighbor_entity) = position_map.get(neighbor_pos) {
-                atmosphere.neighbors[i] = Some((neighbor_entity, true)); // Open by default
+                // Neighbor is open (not sealed) if neither this tile nor the neighbor is a wall
+                let is_open = !wall_positions.contains(pos) && !wall_positions.contains(neighbor_pos);
+                atmosphere.neighbors[i] = Some((neighbor_entity, is_open));
             }
         }
     }
 }
 
-/// Debug system to print atmospheric data
-pub fn debug_atmosphere(
-    query: Query<(&TilePosition, &TileAtmosphere)>,
-    keyboard: Res<ButtonInput<KeyCode>>,
+/// System to update neighbor connections when walls change
+pub fn update_wall_connections(
+    changed_walls: Query<(Entity, &TilePosition), (With<TileVisual>, Changed<Wall>)>,
+    mut all_tiles: Query<(&TilePosition, &mut TileAtmosphere, Option<&Wall>)>,
+    tile_lookup: Query<(Entity, &TilePosition, Option<&Wall>)>,
 ) {
-    if keyboard.just_pressed(KeyCode::Space) {
-        for (pos, atmosphere) in query.iter() {
-            let pressure = atmosphere.mixture.pressure();
-            let temp_celsius = (atmosphere.mixture.temperature as f32 / 1000.0) - 273.15;
-            println!(
-                "Tile ({}, {}): Pressure = {} kPa, Temp = {:.1}°C, Total moles = {} μmol",
-                pos.x, pos.y,
-                pressure as f32 / 1_000_000.0,
-                temp_celsius,
-                atmosphere.mixture.total_moles()
-            );
+    if changed_walls.is_empty() {
+        return;
+    }
+    
+    // Build a position-to-entity map
+    let mut position_map = std::collections::HashMap::new();
+    let mut wall_positions = std::collections::HashSet::new();
+    
+    for (entity, pos, wall) in tile_lookup.iter() {
+        position_map.insert(*pos, entity);
+        if wall.is_some() {
+            wall_positions.insert(*pos);
+        }
+    }
+    
+    // Update all tiles that might be affected
+    for (pos, mut atmosphere, _wall) in all_tiles.iter_mut() {
+        let neighbor_positions = pos.neighbors();
+        
+        for (i, neighbor_pos) in neighbor_positions.iter().enumerate() {
+            if let Some(&neighbor_entity) = position_map.get(neighbor_pos) {
+                // Neighbor is open if neither this tile nor the neighbor is a wall
+                let is_open = !wall_positions.contains(pos) && !wall_positions.contains(neighbor_pos);
+                atmosphere.neighbors[i] = Some((neighbor_entity, is_open));
+            }
         }
     }
 }
@@ -139,9 +161,15 @@ pub struct TileVisual;
 
 /// System to update tile visual representation based on atmospheric pressure
 pub fn update_tile_visuals(
-    mut query: Query<(&TileAtmosphere, &mut Sprite), With<TileVisual>>,
+    mut query: Query<(&TileAtmosphere, &mut Sprite, Option<&Wall>), With<TileVisual>>,
 ) {
-    for (atmosphere, mut sprite) in query.iter_mut() {
+    for (atmosphere, mut sprite, wall) in query.iter_mut() {
+        // If it's a wall, color it gray
+        if wall.is_some() {
+            sprite.color = Color::srgb(0.4, 0.4, 0.4);
+            continue;
+        }
+        
         let pressure = atmosphere.mixture.pressure() as f32 / 1_000_000.0; // Convert to kPa
         let standard_pressure = 101.325;
         
