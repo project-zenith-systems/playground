@@ -78,9 +78,10 @@ fn handle_tile_click(
     mouse_button: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
-    mut tiles: Query<(Entity, &Transform, &TilePosition, Option<&Wall>), With<TileVisual>>,
+    mut tiles: Query<(Entity, &Transform, &TilePosition, Option<&Wall>, &TileAtmosphere), With<TileVisual>>,
     mut commands: Commands,
     mut tile_atmosphere: Query<&mut TileAtmosphere>,
+    all_tiles: Query<(Entity, &TilePosition)>,
 ) {
     if !mouse_button.just_pressed(MouseButton::Left) {
         return;
@@ -94,13 +95,16 @@ fn handle_tile_click(
         let window_size = Vec2::new(window.width(), window.height());
         
         // Convert screen position to world position
-        let ndc = (cursor_pos / window_size) * 2.0 - Vec2::ONE;
+        // Note: Bevy's cursor position has Y=0 at top, but world has Y=0 at center
+        let mut ndc = (cursor_pos / window_size) * 2.0 - Vec2::ONE;
+        ndc.y = -ndc.y; // Flip Y axis to match world coordinates
+        
         let ndc_to_world = camera_transform.compute_matrix() * camera.clip_from_view().inverse();
         let world_pos = ndc_to_world.project_point3(ndc.extend(-1.0));
         let world_pos = world_pos.truncate();
         
         // Find which tile was clicked
-        for (entity, transform, pos, wall) in tiles.iter_mut() {
+        for (entity, transform, pos, wall, _atmosphere) in tiles.iter() {
             let tile_pos = Vec2::new(transform.translation.x, transform.translation.y);
             let half_size = TILE_SIZE / 2.0;
             
@@ -117,6 +121,19 @@ fn handle_tile_click(
                     // Remove wall
                     commands.entity(entity).remove::<Wall>();
                     println!("Removed wall at ({}, {})", pos.x, pos.y);
+                    
+                    // Mark tile and all neighbors as active to trigger gas flow
+                    commands.entity(entity).insert(AtmosphereActive);
+                    
+                    // Activate all neighboring tiles
+                    let neighbor_positions = pos.neighbors();
+                    for neighbor_pos in neighbor_positions.iter() {
+                        for (neighbor_entity, neighbor_tile_pos) in all_tiles.iter() {
+                            if neighbor_tile_pos == neighbor_pos {
+                                commands.entity(neighbor_entity).insert(AtmosphereActive);
+                            }
+                        }
+                    }
                 } else {
                     // Add wall
                     commands.entity(entity).insert(Wall);
@@ -129,10 +146,17 @@ fn handle_tile_click(
                         );
                     }
                     println!("Added wall at ({}, {})", pos.x, pos.y);
+                    
+                    // Mark tile as active to trigger recalculation
+                    commands.entity(entity).insert(AtmosphereActive);
                 }
                 
-                // Mark tile as active to trigger recalculation
-                commands.entity(entity).insert(AtmosphereActive);
+                break;
+            }
+        }
+    }
+}
+
                 
                 break;
             }
