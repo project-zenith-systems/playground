@@ -108,6 +108,77 @@ impl GasMixture {
     pub fn remove_moles(&mut self, gas_type: GasType, amount: u64) {
         self.moles[gas_type as usize] = self.moles[gas_type as usize].saturating_sub(amount);
     }
+    
+    /// Share gas with another mixture based on pressure differential
+    /// This implements a simplified Monson method for gas equalization
+    pub fn share_gas_with(&mut self, other: &mut GasMixture) {
+        let pressure_a = self.pressure() as i128;
+        let pressure_b = other.pressure() as i128;
+        let pressure_diff = pressure_a - pressure_b;
+        
+        // Only share if significant pressure difference (0.1 kPa = 100,000 μkPa)
+        if pressure_diff.abs() < 100_000 {
+            return;
+        }
+        
+        let total_moles_a = self.total_moles();
+        if total_moles_a == 0 {
+            return;
+        }
+        
+        // Calculate transfer amount based on pressure differential
+        // Simplified: transfer 10% of the pressure difference worth of gas
+        let transfer_moles = (pressure_diff * self.volume as i128) / 
+                            (8314 * self.temperature.max(1) as i128 / 100);
+        
+        // Clamp to prevent numerical instabilities
+        let max_transfer = (total_moles_a as i128 / 10).max(1);
+        let transfer_moles = transfer_moles.clamp(-max_transfer, max_transfer) as i64;
+        
+        if transfer_moles == 0 {
+            return;
+        }
+        
+        // Transfer each gas proportionally
+        for i in 0..GAS_TYPE_COUNT {
+            if self.moles[i] == 0 {
+                continue;
+            }
+            
+            let ratio = (self.moles[i] as i128 * 1_000_000) / total_moles_a as i128;
+            let transfer = (transfer_moles as i128 * ratio) / 1_000_000;
+            
+            self.moles[i] = (self.moles[i] as i128 - transfer).max(0) as u64;
+            other.moles[i] = (other.moles[i] as i128 + transfer).max(0) as u64;
+        }
+        
+        // Also share heat
+        self.share_heat_with(other);
+    }
+    
+    /// Share heat with another mixture based on temperature differential
+    pub fn share_heat_with(&mut self, other: &mut GasMixture) {
+        let total_moles_a = self.total_moles();
+        let total_moles_b = other.total_moles();
+        
+        if total_moles_a == 0 || total_moles_b == 0 {
+            return;
+        }
+        
+        // Calculate temperature difference (in milli-Kelvin)
+        let temp_diff = self.temperature as i128 - other.temperature as i128;
+        
+        if temp_diff.abs() < 100 {  // Less than 0.1K difference
+            return;
+        }
+        
+        // Simplified heat transfer - transfer proportional to temperature difference
+        // In reality this would use thermal conductivity, but for POC we use simplified approach
+        let heat_transfer = temp_diff / 10;
+        
+        self.temperature = (self.temperature as i128 - heat_transfer).max(1) as u64;
+        other.temperature = (other.temperature as i128 + heat_transfer).max(1) as u64;
+    }
 }
 
 /// Helper constants for unit conversion
@@ -148,5 +219,55 @@ mod tests {
         mixture.add_moles(GasType::Nitrogen, 2_000_000);
         
         assert_eq!(mixture.total_moles(), 3_000_000);
+    }
+    
+    #[test]
+    fn test_gas_sharing() {
+        // Create two mixtures with different pressures
+        let mut high_pressure = GasMixture::new_air(STANDARD_VOLUME_MICRO_M3, STANDARD_TEMP_MK);
+        let mut low_pressure = GasMixture::new(STANDARD_VOLUME_MICRO_M3, STANDARD_TEMP_MK);
+        
+        let initial_pressure_high = high_pressure.pressure();
+        let initial_pressure_low = low_pressure.pressure();
+        
+        // Gas should flow from high to low pressure
+        assert!(initial_pressure_high > initial_pressure_low);
+        
+        // Share gas multiple times to simulate equilibration
+        for _ in 0..10 {
+            high_pressure.share_gas_with(&mut low_pressure);
+        }
+        
+        let final_pressure_high = high_pressure.pressure();
+        let final_pressure_low = low_pressure.pressure();
+        
+        // Pressures should be closer after sharing
+        let initial_diff = (initial_pressure_high as i128 - initial_pressure_low as i128).abs();
+        let final_diff = (final_pressure_high as i128 - final_pressure_low as i128).abs();
+        
+        assert!(final_diff < initial_diff, 
+            "Pressure difference should decrease after gas sharing. Initial: {}, Final: {}",
+            initial_diff, final_diff);
+    }
+    
+    #[test]
+    fn test_heat_sharing() {
+        let mut hot = GasMixture::new_air(STANDARD_VOLUME_MICRO_M3, 400_000); // ~127°C
+        let mut cold = GasMixture::new_air(STANDARD_VOLUME_MICRO_M3, 250_000); // ~-23°C
+        
+        let initial_temp_hot = hot.temperature;
+        let initial_temp_cold = cold.temperature;
+        
+        // Share heat multiple times
+        for _ in 0..10 {
+            hot.share_heat_with(&mut cold);
+        }
+        
+        // Temperatures should be closer
+        let initial_diff = (initial_temp_hot as i128 - initial_temp_cold as i128).abs();
+        let final_diff = (hot.temperature as i128 - cold.temperature as i128).abs();
+        
+        assert!(final_diff < initial_diff,
+            "Temperature difference should decrease after heat sharing");
     }
 }

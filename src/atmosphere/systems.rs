@@ -1,15 +1,56 @@
 use bevy::prelude::*;
 use super::components::*;
+use super::gas::GasMixture;
 
 /// System to process gas sharing between connected tiles
 pub fn process_gas_sharing(
-    mut query: Query<(Entity, &mut TileAtmosphere), With<AtmosphereDirty>>,
+    query: Query<(Entity, &TileAtmosphere), With<AtmosphereDirty>>,
+    mut all_tiles: Query<&mut TileAtmosphere>,
     mut commands: Commands,
 ) {
-    // TODO: Implement gas sharing algorithm
-    // For now, just remove the dirty marker
-    for (entity, _atmosphere) in query.iter() {
-        commands.entity(entity).remove::<AtmosphereDirty>();
+    // Collect tiles and their neighbors that need processing
+    // We need to clone the gas mixtures to avoid borrow conflicts
+    let mut updates: Vec<(Entity, GasMixture, Vec<(Entity, GasMixture)>)> = Vec::new();
+    
+    for (entity, atmosphere) in query.iter() {
+        let mut neighbor_data = Vec::new();
+        
+        for neighbor_opt in atmosphere.neighbors.iter() {
+            if let Some((neighbor_entity, is_open)) = neighbor_opt {
+                if *is_open {
+                    if let Ok(neighbor_atmos) = all_tiles.get(*neighbor_entity) {
+                        neighbor_data.push((*neighbor_entity, neighbor_atmos.mixture.clone()));
+                    }
+                }
+            }
+        }
+        
+        if !neighbor_data.is_empty() {
+            updates.push((entity, atmosphere.mixture.clone(), neighbor_data));
+        }
+    }
+    
+    // Process gas sharing for each dirty tile
+    for (tile_entity, mut tile_mixture, neighbor_data) in updates {
+        for (neighbor_entity, mut neighbor_mixture) in neighbor_data {
+            // Share gas between the two mixtures
+            tile_mixture.share_gas_with(&mut neighbor_mixture);
+            
+            // Update the neighbor's mixture
+            if let Ok(mut neighbor_atmos) = all_tiles.get_mut(neighbor_entity) {
+                neighbor_atmos.mixture = neighbor_mixture;
+                // Mark neighbor as dirty if there was a change
+                commands.entity(neighbor_entity).insert(AtmosphereDirty);
+            }
+        }
+        
+        // Update the tile's mixture
+        if let Ok(mut tile_atmos) = all_tiles.get_mut(tile_entity) {
+            tile_atmos.mixture = tile_mixture;
+        }
+        
+        // Remove dirty marker from processed tile
+        commands.entity(tile_entity).remove::<AtmosphereDirty>();
     }
 }
 
@@ -52,6 +93,46 @@ pub fn debug_atmosphere(
                 temp_celsius,
                 atmosphere.mixture.total_moles()
             );
+        }
+    }
+}
+
+/// Component to mark tiles for visual rendering
+#[derive(Component)]
+pub struct TileVisual;
+
+/// System to update tile visual representation based on atmospheric pressure
+pub fn update_tile_visuals(
+    mut query: Query<(&TileAtmosphere, &mut Sprite), With<TileVisual>>,
+) {
+    for (atmosphere, mut sprite) in query.iter_mut() {
+        let pressure = atmosphere.mixture.pressure() as f32 / 1_000_000.0; // Convert to kPa
+        let standard_pressure = 101.325;
+        
+        // Color based on pressure relative to standard atmosphere
+        let pressure_ratio = pressure / standard_pressure;
+        
+        if pressure_ratio < 0.01 {
+            // Vacuum - black
+            sprite.color = Color::srgb(0.0, 0.0, 0.0);
+        } else if pressure_ratio < 0.5 {
+            // Low pressure - blue
+            let intensity = pressure_ratio * 2.0;
+            sprite.color = Color::srgb(0.0, 0.0, intensity);
+        } else if pressure_ratio < 0.9 {
+            // Slightly low - cyan
+            let intensity = (pressure_ratio - 0.5) / 0.4;
+            sprite.color = Color::srgb(0.0, intensity, 1.0);
+        } else if pressure_ratio < 1.1 {
+            // Normal - green
+            sprite.color = Color::srgb(0.0, 1.0, 0.0);
+        } else if pressure_ratio < 2.0 {
+            // High pressure - yellow to orange
+            let intensity = (pressure_ratio - 1.1) / 0.9;
+            sprite.color = Color::srgb(1.0, 1.0 - intensity * 0.5, 0.0);
+        } else {
+            // Very high pressure - red
+            sprite.color = Color::srgb(1.0, 0.0, 0.0);
         }
     }
 }

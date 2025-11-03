@@ -9,6 +9,7 @@ impl Plugin for AtmospherePlugin {
         app.add_systems(Update, (
             initialize_neighbors,
             process_gas_sharing,
+            update_tile_visuals,
             debug_atmosphere,
         ).chain());
     }
