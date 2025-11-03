@@ -78,7 +78,7 @@ fn handle_tile_click(
     mouse_button: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
-    mut tiles: Query<(Entity, &Transform, &TilePosition, Option<&Wall>, &TileAtmosphere), With<TileVisual>>,
+    tiles: Query<(Entity, &Transform, &TilePosition, Option<&Wall>), With<TileVisual>>,
     mut commands: Commands,
     mut tile_atmosphere: Query<&mut TileAtmosphere>,
     all_tiles: Query<(Entity, &TilePosition)>,
@@ -104,7 +104,7 @@ fn handle_tile_click(
         let world_pos = world_pos.truncate();
         
         // Find which tile was clicked
-        for (entity, transform, pos, wall, _atmosphere) in tiles.iter() {
+        for (entity, transform, pos, wall) in tiles.iter() {
             let tile_pos = Vec2::new(transform.translation.x, transform.translation.y);
             let half_size = TILE_SIZE / 2.0;
             
@@ -150,13 +150,6 @@ fn handle_tile_click(
                     // Mark tile as active to trigger recalculation
                     commands.entity(entity).insert(AtmosphereActive);
                 }
-                
-                break;
-            }
-        }
-    }
-}
-
                 
                 break;
             }
