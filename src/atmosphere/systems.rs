@@ -68,13 +68,15 @@ pub fn process_gas_sharing(
                 // First try other_tiles
                 if let Ok(mut neighbor_atmos) = other_tiles.get_mut(neighbor_entity) {
                     neighbor_atmos.mixture = neighbor_mixture;
-                    // Mark neighbor as active since it just received gas
-                    commands.entity(neighbor_entity).insert(AtmosphereActive);
                 }
                 // If not there, try active_tiles
                 else if let Ok((_, mut neighbor_atmos)) = active_tiles.get_mut(neighbor_entity) {
                     neighbor_atmos.mixture = neighbor_mixture;
                 }
+                
+                // ALWAYS mark neighbor as active when there's a pressure difference
+                // This ensures gas continues to spread outward
+                commands.entity(neighbor_entity).insert(AtmosphereActive);
             }
         }
         

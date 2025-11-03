@@ -122,34 +122,64 @@ impl GasMixture {
         }
         
         let total_moles_a = self.total_moles();
-        if total_moles_a == 0 {
+        let total_moles_b = other.total_moles();
+        
+        // Can't transfer from empty mixture
+        if pressure_diff > 0 && total_moles_a == 0 {
+            return;
+        }
+        if pressure_diff < 0 && total_moles_b == 0 {
             return;
         }
         
         // Calculate transfer amount based on pressure differential
-        // Simplified: transfer 10% of the pressure difference worth of gas
-        let transfer_moles = (pressure_diff * self.volume as i128) / 
-                            (8314 * self.temperature.max(1) as i128 / 100);
+        // Transfer from higher to lower pressure
+        // Use the source mixture's volume and temperature for calculation
+        let (source_vol, source_temp, source_moles) = if pressure_diff > 0 {
+            (self.volume, self.temperature, total_moles_a)
+        } else {
+            (other.volume, other.temperature, total_moles_b)
+        };
         
-        // Clamp to prevent numerical instabilities
-        let max_transfer = (total_moles_a as i128 / 10).max(1);
-        let transfer_moles = transfer_moles.clamp(-max_transfer, max_transfer) as i64;
+        // Calculate moles to transfer (10% of pressure difference)
+        let transfer_moles = (pressure_diff.abs() * source_vol as i128) / 
+                            (8314 * source_temp.max(1) as i128 / 100);
+        
+        // Clamp to prevent transferring more than 10% of source gas
+        let max_transfer = (source_moles as i128 / 10).max(1);
+        let transfer_moles = transfer_moles.min(max_transfer);
         
         if transfer_moles == 0 {
             return;
         }
         
-        // Transfer each gas proportionally
-        for i in 0..GAS_TYPE_COUNT {
-            if self.moles[i] == 0 {
-                continue;
+        // Transfer each gas proportionally from source to destination
+        if pressure_diff > 0 {
+            // Transfer from self to other
+            for i in 0..GAS_TYPE_COUNT {
+                if self.moles[i] == 0 {
+                    continue;
+                }
+                
+                let ratio = (self.moles[i] as u128 * 1_000_000) / total_moles_a as u128;
+                let transfer = ((transfer_moles as u128 * ratio) / 1_000_000) as u64;
+                
+                self.moles[i] = self.moles[i].saturating_sub(transfer);
+                other.moles[i] = other.moles[i].saturating_add(transfer);
             }
-            
-            let ratio = (self.moles[i] as i128 * 1_000_000) / total_moles_a as i128;
-            let transfer = (transfer_moles as i128 * ratio) / 1_000_000;
-            
-            self.moles[i] = (self.moles[i] as i128 - transfer).max(0) as u64;
-            other.moles[i] = (other.moles[i] as i128 + transfer).max(0) as u64;
+        } else {
+            // Transfer from other to self
+            for i in 0..GAS_TYPE_COUNT {
+                if other.moles[i] == 0 {
+                    continue;
+                }
+                
+                let ratio = (other.moles[i] as u128 * 1_000_000) / total_moles_b as u128;
+                let transfer = ((transfer_moles as u128 * ratio) / 1_000_000) as u64;
+                
+                other.moles[i] = other.moles[i].saturating_sub(transfer);
+                self.moles[i] = self.moles[i].saturating_add(transfer);
+            }
         }
         
         // Also share heat
