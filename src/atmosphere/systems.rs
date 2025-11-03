@@ -2,6 +2,35 @@ use bevy::prelude::*;
 use super::components::*;
 use super::gas::GasMixture;
 
+/// System to continuously check tiles and mark them dirty if they need gas sharing
+pub fn mark_dirty_tiles(
+    query: Query<(Entity, &TileAtmosphere), Without<AtmosphereDirty>>,
+    all_tiles: Query<&TileAtmosphere>,
+    mut commands: Commands,
+) {
+    for (entity, atmosphere) in query.iter() {
+        let my_pressure = atmosphere.mixture.pressure();
+        
+        // Check if any neighbor has a significant pressure difference
+        for neighbor_opt in atmosphere.neighbors.iter() {
+            if let Some((neighbor_entity, is_open)) = neighbor_opt {
+                if *is_open {
+                    if let Ok(neighbor_atmos) = all_tiles.get(*neighbor_entity) {
+                        let neighbor_pressure = neighbor_atmos.mixture.pressure();
+                        let pressure_diff = (my_pressure as i128 - neighbor_pressure as i128).abs();
+                        
+                        // If pressure difference is significant (> 0.1 kPa = 100,000 μkPa)
+                        if pressure_diff > 100_000 {
+                            commands.entity(entity).insert(AtmosphereDirty);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// System to process gas sharing between connected tiles
 pub fn process_gas_sharing(
     mut dirty_tiles: Query<(Entity, &mut TileAtmosphere), With<AtmosphereDirty>>,
@@ -44,8 +73,6 @@ pub fn process_gas_sharing(
             // First try other_tiles
             if let Ok(mut neighbor_atmos) = other_tiles.get_mut(neighbor_entity) {
                 neighbor_atmos.mixture = neighbor_mixture;
-                // Mark neighbor as dirty if there was a change
-                commands.entity(neighbor_entity).insert(AtmosphereDirty);
             }
             // If not there, try dirty_tiles
             else if let Ok((_, mut neighbor_atmos)) = dirty_tiles.get_mut(neighbor_entity) {
