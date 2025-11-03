@@ -495,54 +495,77 @@ pub enum ZonePriority {
 }
 ```
 
-### Dirty Flagging
+### Active Tile Optimization
 
-Only update tiles that have changed. The presence of the component indicates the tile is dirty and needs updating.
+Only update tiles that have active gas flow. The presence of the component indicates the tile has non-equalized gas exchange with neighbors.
 
 ```rust
-/// Marker component - presence indicates tile needs atmospheric update
+/// Marker component - presence indicates tile has active gas exchange
 #[derive(Component)]
-pub struct AtmosphereDirty;
+pub struct AtmosphereActive;
 ```
 
-When a tile's atmosphere changes significantly, add the `AtmosphereDirty` component. After processing, remove it. This is more efficient than checking a boolean field.
+A tile is marked as Active when:
+- It's initially created with gas
+- A neighbor's pressure differs significantly (> 0.1 kPa)
+- Gas sharing occurs with any neighbor
+
+A tile's Active marker is removed when:
+- All neighbors are equalized (pressure differences < 0.1 kPa)
+- The tile has no gas and all neighbors have no gas
+
+This is more efficient than scanning all tiles every frame - only tiles with active gas exchange are processed.
 
 ```rust
-// Mark tile as dirty
-commands.entity(tile_entity).insert(AtmosphereDirty);
+// Mark tile as active when gas sharing occurs
+commands.entity(tile_entity).insert(AtmosphereActive);
 
-// Query only dirty tiles
-fn update_dirty_tiles(
+// Process only active tiles
+fn process_gas_sharing(
     mut commands: Commands,
-    query: Query<(Entity, &mut TileAtmosphere), With<AtmosphereDirty>>,
+    mut query: Query<(Entity, &mut TileAtmosphere), With<AtmosphereActive>>,
+    all_tiles: Query<&TileAtmosphere>,
 ) {
-    for (entity, mut atmosphere) in query.iter() {
-        // Process tile...
+    for (entity, mut atmosphere) in query.iter_mut() {
+        let mut has_active_exchange = false;
         
-        // Remove dirty marker after processing
-        commands.entity(entity).remove::<AtmosphereDirty>();
+        // Process gas sharing with neighbors
+        // ...
+        
+        // Check if still active after processing
+        for neighbor in &atmosphere.neighbors {
+            if has_pressure_difference(atmosphere, neighbor) {
+                has_active_exchange = true;
+                break;
+            }
+        }
+        
+        // Remove active marker if equilibrium reached
+        if !has_active_exchange {
+            commands.entity(entity).remove::<AtmosphereActive>();
+        }
     }
 }
 ```
 
 ### Multithreading
 
-Process tiles in parallel, but only dirty tiles to avoid wasted work:
+Process tiles in parallel, but only active tiles to avoid wasted work:
 
 ```rust
-fn update_tile_atmospheres(
+fn process_gas_sharing(
     mut commands: Commands,
-    mut query: Query<(Entity, &mut TileAtmosphere), With<AtmosphereDirty>>,
-    gas_registry: Res<GasRegistry>,
+    mut query: Query<(Entity, &mut TileAtmosphere), With<AtmosphereActive>>,
+    all_tiles: Query<&TileAtmosphere>,
 ) {
-    // Process dirty tiles in parallel
+    // Process active tiles
     // Each tile's neighbors array allows independent processing
     // Tiles share gas with neighbors, which may cause write conflicts,
-    // but Bevy's change detection will mark affected neighbors as dirty
+    // but Bevy's change detection will mark affected neighbors as active
     // for the next frame, ensuring eventual consistency
     
     query.par_iter_mut().for_each(|(entity, mut atmosphere)| {
-        // Process each dirty tile
+        // Process each active tile
         // Read neighbor data and update atmosphere
         for (neighbor_entity, is_open) in atmosphere.neighbors.iter().flatten() {
             if *is_open {
@@ -558,7 +581,8 @@ fn update_tile_atmospheres(
 Note: Actual implementation requires careful handling of neighbor updates to avoid data races. A practical approach is to:
 1. First pass: Calculate transfers in parallel (read-only)
 2. Second pass: Apply transfers sequentially or with synchronization
-3. Mark neighbors as dirty when changes occur
+3. Mark neighbors as active when changes occur
+4. Remove active marker when equilibrium is reached with all neighbors
 
 ### Gas Mixture Pooling
 

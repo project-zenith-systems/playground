@@ -43,9 +43,10 @@ impl TileAtmosphere {
     }
 }
 
-/// Marker component - presence indicates tile needs atmospheric update
+/// Marker component - presence indicates tile has active gas exchange with neighbors
+/// Tile remains active until equilibrium is reached with all neighbors
 #[derive(Component)]
-pub struct AtmosphereDirty;
+pub struct AtmosphereActive;
 
 /// Space/void marker
 #[derive(Component)]

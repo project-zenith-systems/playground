@@ -2,91 +2,91 @@ use bevy::prelude::*;
 use super::components::*;
 use super::gas::GasMixture;
 
-/// System to continuously check tiles and mark them dirty if they need gas sharing
-pub fn mark_dirty_tiles(
-    query: Query<(Entity, &TileAtmosphere), Without<AtmosphereDirty>>,
-    all_tiles: Query<&TileAtmosphere>,
+/// System to process gas sharing between connected tiles
+/// Only processes tiles with AtmosphereActive marker
+pub fn process_gas_sharing(
+    mut active_tiles: Query<(Entity, &mut TileAtmosphere), With<AtmosphereActive>>,
+    mut other_tiles: Query<&mut TileAtmosphere, Without<AtmosphereActive>>,
     mut commands: Commands,
 ) {
-    for (entity, atmosphere) in query.iter() {
+    // Collect updates from active tiles
+    let mut updates: Vec<(Entity, GasMixture, Vec<(Entity, GasMixture)>, bool)> = Vec::new();
+    
+    for (entity, atmosphere) in active_tiles.iter() {
+        let mut neighbor_data = Vec::new();
+        let mut has_active_exchange = false;
         let my_pressure = atmosphere.mixture.pressure();
         
-        // Check if any neighbor has a significant pressure difference
         for neighbor_opt in atmosphere.neighbors.iter() {
             if let Some((neighbor_entity, is_open)) = neighbor_opt {
                 if *is_open {
-                    if let Ok(neighbor_atmos) = all_tiles.get(*neighbor_entity) {
+                    // Try to get from other_tiles (without active marker)
+                    if let Ok(neighbor_atmos) = other_tiles.get(*neighbor_entity) {
                         let neighbor_pressure = neighbor_atmos.mixture.pressure();
                         let pressure_diff = (my_pressure as i128 - neighbor_pressure as i128).abs();
                         
-                        // If pressure difference is significant (> 0.1 kPa = 100,000 μkPa)
+                        // Check if there's significant pressure difference (> 0.1 kPa = 100,000 μkPa)
                         if pressure_diff > 100_000 {
-                            commands.entity(entity).insert(AtmosphereDirty);
-                            break;
+                            has_active_exchange = true;
+                            neighbor_data.push((*neighbor_entity, neighbor_atmos.mixture.clone(), true));
+                        } else {
+                            neighbor_data.push((*neighbor_entity, neighbor_atmos.mixture.clone(), false));
                         }
                     }
-                }
-            }
-        }
-    }
-}
-
-/// System to process gas sharing between connected tiles
-pub fn process_gas_sharing(
-    mut dirty_tiles: Query<(Entity, &mut TileAtmosphere), With<AtmosphereDirty>>,
-    mut other_tiles: Query<&mut TileAtmosphere, Without<AtmosphereDirty>>,
-    mut commands: Commands,
-) {
-    // Collect updates from dirty tiles
-    let mut updates: Vec<(Entity, GasMixture, Vec<(Entity, GasMixture)>)> = Vec::new();
-    
-    for (entity, atmosphere) in dirty_tiles.iter() {
-        let mut neighbor_data = Vec::new();
-        
-        for neighbor_opt in atmosphere.neighbors.iter() {
-            if let Some((neighbor_entity, is_open)) = neighbor_opt {
-                if *is_open {
-                    // Try to get from other_tiles (without dirty marker)
-                    if let Ok(neighbor_atmos) = other_tiles.get(*neighbor_entity) {
-                        neighbor_data.push((*neighbor_entity, neighbor_atmos.mixture.clone()));
-                    }
-                    // If not found there, try dirty_tiles
-                    else if let Ok((_, neighbor_atmos)) = dirty_tiles.get(*neighbor_entity) {
-                        neighbor_data.push((*neighbor_entity, neighbor_atmos.mixture.clone()));
+                    // If not found there, try active_tiles
+                    else if let Ok((_, neighbor_atmos)) = active_tiles.get(*neighbor_entity) {
+                        let neighbor_pressure = neighbor_atmos.mixture.pressure();
+                        let pressure_diff = (my_pressure as i128 - neighbor_pressure as i128).abs();
+                        
+                        if pressure_diff > 100_000 {
+                            has_active_exchange = true;
+                            neighbor_data.push((*neighbor_entity, neighbor_atmos.mixture.clone(), true));
+                        } else {
+                            neighbor_data.push((*neighbor_entity, neighbor_atmos.mixture.clone(), false));
+                        }
                     }
                 }
             }
         }
         
         if !neighbor_data.is_empty() {
-            updates.push((entity, atmosphere.mixture.clone(), neighbor_data));
+            updates.push((entity, atmosphere.mixture.clone(), neighbor_data, has_active_exchange));
+        } else {
+            // No neighbors, can't be active
+            updates.push((entity, atmosphere.mixture.clone(), vec![], false));
         }
     }
     
-    // Process gas sharing for each dirty tile
-    for (tile_entity, mut tile_mixture, neighbor_data) in updates {
-        for (neighbor_entity, mut neighbor_mixture) in neighbor_data {
-            // Share gas between the two mixtures
-            tile_mixture.share_gas_with(&mut neighbor_mixture);
-            
-            // Update the neighbor's mixture
-            // First try other_tiles
-            if let Ok(mut neighbor_atmos) = other_tiles.get_mut(neighbor_entity) {
-                neighbor_atmos.mixture = neighbor_mixture;
-            }
-            // If not there, try dirty_tiles
-            else if let Ok((_, mut neighbor_atmos)) = dirty_tiles.get_mut(neighbor_entity) {
-                neighbor_atmos.mixture = neighbor_mixture;
+    // Process gas sharing for each active tile
+    for (tile_entity, mut tile_mixture, neighbor_data, has_active_exchange) in updates {
+        for (neighbor_entity, mut neighbor_mixture, had_pressure_diff) in neighbor_data {
+            if had_pressure_diff {
+                // Share gas between the two mixtures
+                tile_mixture.share_gas_with(&mut neighbor_mixture);
+                
+                // Update the neighbor's mixture
+                // First try other_tiles
+                if let Ok(mut neighbor_atmos) = other_tiles.get_mut(neighbor_entity) {
+                    neighbor_atmos.mixture = neighbor_mixture;
+                    // Mark neighbor as active since it just received gas
+                    commands.entity(neighbor_entity).insert(AtmosphereActive);
+                }
+                // If not there, try active_tiles
+                else if let Ok((_, mut neighbor_atmos)) = active_tiles.get_mut(neighbor_entity) {
+                    neighbor_atmos.mixture = neighbor_mixture;
+                }
             }
         }
         
         // Update the tile's mixture
-        if let Ok((_, mut tile_atmos)) = dirty_tiles.get_mut(tile_entity) {
+        if let Ok((_, mut tile_atmos)) = active_tiles.get_mut(tile_entity) {
             tile_atmos.mixture = tile_mixture;
         }
         
-        // Remove dirty marker from processed tile
-        commands.entity(tile_entity).remove::<AtmosphereDirty>();
+        // Remove active marker if no active exchange with any neighbor
+        if !has_active_exchange {
+            commands.entity(tile_entity).remove::<AtmosphereActive>();
+        }
     }
 }
 

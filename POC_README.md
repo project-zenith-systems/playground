@@ -12,7 +12,7 @@ Proof of concept implementation of the tile-based atmospheric simulation system 
 - ✅ Gas sharing between tiles with pressure equalization
 - ✅ Heat transfer between tiles
 - ✅ Visual representation with pressure-based coloring
-- ✅ Dirty tile optimization (only updates tiles that changed)
+- ✅ Active tile optimization (only updates tiles with active gas exchange)
 
 ## Building and Running
 
@@ -67,14 +67,18 @@ src/
 ### Gas Sharing Algorithm
 
 The system implements a simplified Monson method:
-1. Calculate pressure differential between connected tiles
-2. Transfer gas proportionally based on pressure difference
-3. Transfer heat based on temperature difference
-4. Mark affected neighbors as dirty for next update
+1. Only process tiles marked with `AtmosphereActive` component
+2. Calculate pressure differential between connected tiles
+3. Transfer gas proportionally based on pressure difference (if > 0.1 kPa)
+4. Transfer heat based on temperature difference
+5. Mark neighbors as active if they receive gas
+6. Remove active marker from tile if all neighbors are equalized
 
 ### Performance
 
-- Uses dirty flagging to only update tiles that changed
+- Uses active tile flagging to only update tiles with gas exchange
+- Tiles remain active until equilibrium is reached with all neighbors
+- More efficient than scanning all tiles every frame
 - Clones gas mixtures to avoid Rust borrow checker conflicts
 - Integer arithmetic throughout (no floating point)
 - Fixed-size arrays for better cache performance

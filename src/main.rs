@@ -31,7 +31,7 @@ fn setup(mut commands: Commands) {
             commands.spawn((
                 atmosphere,
                 TilePosition::new(x, y),
-                AtmosphereDirty, // Mark as dirty for initial processing
+                AtmosphereActive, // Mark as active for initial processing
                 TileVisual,
                 Sprite {
                     color: Color::srgb(0.5, 0.5, 0.5),
