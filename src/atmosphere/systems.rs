@@ -10,11 +10,12 @@ pub fn process_gas_sharing(
     mut commands: Commands,
 ) {
     // Collect updates from active tiles
-    let mut updates: Vec<(Entity, GasMixture, Vec<(Entity, GasMixture, bool)>, bool)> = Vec::new();
+    let mut updates: Vec<(Entity, GasMixture, Vec<(Entity, GasMixture, bool)>, bool, bool)> = Vec::new();
     
     for (entity, atmosphere) in active_tiles.iter() {
         let mut neighbor_data = Vec::new();
         let mut has_active_exchange = false;
+        let mut will_activate_neighbor = false;
         let my_pressure = atmosphere.mixture.pressure();
         
         for neighbor_opt in atmosphere.neighbors.iter() {
@@ -28,6 +29,7 @@ pub fn process_gas_sharing(
                         // Check if there's significant pressure difference (> 0.1 kPa = 100,000 μkPa)
                         if pressure_diff > 100_000 {
                             has_active_exchange = true;
+                            will_activate_neighbor = true; // We'll be activating this neighbor
                             neighbor_data.push((*neighbor_entity, neighbor_atmos.mixture.clone(), true));
                         } else {
                             neighbor_data.push((*neighbor_entity, neighbor_atmos.mixture.clone(), false));
@@ -50,15 +52,15 @@ pub fn process_gas_sharing(
         }
         
         if !neighbor_data.is_empty() {
-            updates.push((entity, atmosphere.mixture.clone(), neighbor_data, has_active_exchange));
+            updates.push((entity, atmosphere.mixture.clone(), neighbor_data, has_active_exchange, will_activate_neighbor));
         } else {
             // No neighbors, can't be active
-            updates.push((entity, atmosphere.mixture.clone(), vec![], false));
+            updates.push((entity, atmosphere.mixture.clone(), vec![], false, false));
         }
     }
     
     // Process gas sharing for each active tile
-    for (tile_entity, mut tile_mixture, neighbor_data, has_active_exchange) in updates {
+    for (tile_entity, mut tile_mixture, neighbor_data, has_active_exchange, will_activate_neighbor) in updates {
         for (neighbor_entity, mut neighbor_mixture, had_pressure_diff) in neighbor_data {
             if had_pressure_diff {
                 // Share gas between the two mixtures
@@ -85,8 +87,9 @@ pub fn process_gas_sharing(
             tile_atmos.mixture = tile_mixture;
         }
         
-        // Remove active marker if no active exchange with any neighbor
-        if !has_active_exchange {
+        // Keep tile active if it has active exchange OR if it just activated a neighbor
+        // The latter ensures gas continues flowing down long tunnels
+        if !has_active_exchange && !will_activate_neighbor {
             commands.entity(tile_entity).remove::<AtmosphereActive>();
         }
     }
