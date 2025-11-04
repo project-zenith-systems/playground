@@ -56,6 +56,19 @@ pub struct ExposedToSpace;
 #[derive(Component)]
 pub struct Wall;
 
+/// Component to store and visualize flow vectors for atmospheric pressure gradients
+#[derive(Component, Default)]
+pub struct FlowVector {
+    pub direction: Vec2,
+    pub magnitude: f32,
+}
+
+impl FlowVector {
+    pub fn new(direction: Vec2, magnitude: f32) -> Self {
+        Self { direction, magnitude }
+    }
+}
+
 /// Tile position in the grid
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TilePosition {

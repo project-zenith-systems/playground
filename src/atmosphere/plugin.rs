@@ -10,6 +10,7 @@ impl Plugin for AtmospherePlugin {
             initialize_neighbors,
             update_wall_connections,
             process_gas_sharing,
+            calculate_flow_vectors,
             update_tile_visuals,
         ).chain());
     }

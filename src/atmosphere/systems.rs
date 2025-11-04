@@ -124,7 +124,7 @@ pub fn initialize_neighbors(
 
 /// System to update neighbor connections when walls change
 pub fn update_wall_connections(
-    changed_walls_added: Query<&TilePosition, (With<TileVisual>, Added<Wall>)>,
+    changed_walls_added: Query<&TilePosition, Added<Wall>>,
     mut changed_walls_removed: RemovedComponents<Wall>,
     mut all_tiles: Query<(&TilePosition, &mut TileAtmosphere, Option<&Wall>)>,
     tile_lookup: Query<(Entity, &TilePosition, Option<&Wall>)>,
@@ -162,13 +162,9 @@ pub fn update_wall_connections(
     }
 }
 
-/// Component to mark tiles for visual rendering
-#[derive(Component)]
-pub struct TileVisual;
-
 /// System to update tile visual representation based on atmospheric pressure
 pub fn update_tile_visuals(
-    mut query: Query<(&TileAtmosphere, &mut Sprite, Option<&Wall>), With<TileVisual>>,
+    mut query: Query<(&TileAtmosphere, &mut Sprite, Option<&Wall>)>,
 ) {
     for (atmosphere, mut sprite, wall) in query.iter_mut() {
         // If it's a wall, color it gray
@@ -181,15 +177,22 @@ pub fn update_tile_visuals(
         let standard_pressure = 101.325;
         
         // Color based on pressure relative to standard atmosphere
+        // Using logarithmic scale for better visibility of low pressures
         let pressure_ratio = pressure / standard_pressure;
         
-        if pressure_ratio < 0.01 {
-            // Vacuum - black
+        if pressure_ratio < 0.001 {
+            // Deep vacuum - black
             sprite.color = Color::srgb(0.0, 0.0, 0.0);
-        } else if pressure_ratio < 0.5 {
-            // Low pressure - blue
-            let intensity = pressure_ratio * 2.0;
+        } else if pressure_ratio < 0.1 {
+            // Very low pressure - dark blue to blue (logarithmic scale)
+            // Map 0.001-0.1 to 0.2-0.6 intensity
+            let log_ratio = (pressure_ratio / 0.001).log10() / 2.0; // 0.0 to 1.0
+            let intensity = 0.2 + log_ratio * 0.4;
             sprite.color = Color::srgb(0.0, 0.0, intensity);
+        } else if pressure_ratio < 0.5 {
+            // Low pressure - blue to bright blue
+            let t = (pressure_ratio - 0.1) / 0.4;
+            sprite.color = Color::srgb(0.0, t * 0.3, 0.6 + t * 0.4);
         } else if pressure_ratio < 0.9 {
             // Slightly low - cyan
             let intensity = (pressure_ratio - 0.5) / 0.4;
@@ -204,6 +207,72 @@ pub fn update_tile_visuals(
         } else {
             // Very high pressure - red
             sprite.color = Color::srgb(1.0, 0.0, 0.0);
+        }
+    }
+}
+
+/// System to calculate flow vectors based on pressure gradients
+pub fn calculate_flow_vectors(
+    mut tiles: Query<(Entity, &TileAtmosphere, &mut FlowVector, Option<&Wall>)>,
+    all_tiles: Query<&TileAtmosphere>,
+) {
+    // Collect pressure gradients first
+    let mut updates = Vec::new();
+    
+    for (entity, atmosphere, _flow, wall) in tiles.iter() {
+        // Skip walls
+        if wall.is_some() {
+            updates.push((entity, Vec2::ZERO, 0.0));
+            continue;
+        }
+        
+        let my_pressure = atmosphere.mixture.pressure() as f32;
+        let mut total_gradient = Vec2::ZERO;
+        let mut neighbor_count = 0;
+        
+        // Check all 4 neighbors
+        for (i, neighbor_opt) in atmosphere.neighbors.iter().enumerate() {
+            if let Some((neighbor_entity, is_open)) = neighbor_opt {
+                if *is_open {
+                    if let Ok(neighbor_atmos) = all_tiles.get(*neighbor_entity) {
+                        let neighbor_pressure = neighbor_atmos.mixture.pressure() as f32;
+                        let pressure_diff = neighbor_pressure - my_pressure;
+                        
+                        // Direction vectors: [North, East, South, West]
+                        let direction = match i {
+                            0 => Vec2::new(0.0, 1.0),   // North
+                            1 => Vec2::new(1.0, 0.0),   // East
+                            2 => Vec2::new(0.0, -1.0),  // South
+                            3 => Vec2::new(-1.0, 0.0),  // West
+                            _ => Vec2::ZERO,
+                        };
+                        
+                        // Gradient points from low to high pressure
+                        total_gradient += direction * pressure_diff;
+                        neighbor_count += 1;
+                    }
+                }
+            }
+        }
+        
+        if neighbor_count > 0 {
+            let magnitude = total_gradient.length();
+            let direction = if magnitude > 0.0 {
+                total_gradient.normalize()
+            } else {
+                Vec2::ZERO
+            };
+            updates.push((entity, direction, magnitude));
+        } else {
+            updates.push((entity, Vec2::ZERO, 0.0));
+        }
+    }
+    
+    // Apply updates
+    for (entity, direction, magnitude) in updates {
+        if let Ok((_, _, mut flow, _)) = tiles.get_mut(entity) {
+            flow.direction = direction;
+            flow.magnitude = magnitude;
         }
     }
 }
